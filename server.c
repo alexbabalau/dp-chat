@@ -11,13 +11,10 @@
 #include <pthread.h>
 
 #include "netio.h"
+#include "trie.h"
 
 #define SERVER_PORT 5555
 #define SERVER_ADDRESS "0.0.0.0"
-#define NUMBER_OF_USERS 4
-
-char* usernames[] = {"alex", "daria", "miriam", "david"};
-char* passwords[] = {"alex", "daria", "miriam", "david"};
 
 char currentUser[1005];
 int isAuthenticated[105];
@@ -30,33 +27,19 @@ int active[105], cntActive;
 //char reply[1005];
 int cntConnection;
 pthread_mutex_t mutex;
+struct Trie* Root;
 
 enum check_result{NO_COMMAND, REGULAR_COMMAND, QUIT_COMMAND};
 
 int authenticate(char* username, char* password){
-	for(int i = 0; i < NUMBER_OF_USERS; i++){
-		if(strcmp(username, usernames[i]) == 0){
-			if(strcmp(password, passwords[i]) == 0){
-				//isAuthenticated = 1;
-				strcpy(currentUser, username);
-				return 1;
-			}
-			else
-				return 0;
-		}
-	}
-	return 0;
+	
+	return checkCredentials(Root, username, password);
 }
 
-void executeAuthCommand(char* command, int connectionIndex, char* reply){
-	if(isAuthenticated[connectionIndex] == 1){
-		sprintf(reply, "Already authenticated\n");
-		return;
-	}
+int extractUsernameAndPasswordFromCommand(char* command, char* username, char* password){
 	char* token;
 	token = strtok(command, " \n");
 	int cnt = 0;
-	char username[105], password[105];
 	while(token != NULL){
 		cnt++;
 		if(cnt == 2){
@@ -66,10 +49,24 @@ void executeAuthCommand(char* command, int connectionIndex, char* reply){
 			strcpy(password, token);
 		}
 		if(cnt > 3){
-			sprintf(reply, "Too many arguments for auth command. The syntax is /auth username password\n");
-			return;
+			return 0;
 		}
 		token = strtok(NULL, " \n");
+	}
+	if(cnt != 3)
+		return 0;
+	return 1;
+}
+
+void executeAuthCommand(char* command, int connectionIndex, char* reply){
+	if(isAuthenticated[connectionIndex] == 1){
+		sprintf(reply, "Already authenticated\n");
+		return;
+	}
+	char username[105], password[105];
+	if(!extractUsernameAndPasswordFromCommand(command, username, password)){
+		sprintf(reply, "Invalid syntax. The correct usage is /auth username password\n");
+		return;
 	}
 	if(authenticate(username, password)){
 		isAuthenticated[connectionIndex] = 1;
@@ -79,6 +76,35 @@ void executeAuthCommand(char* command, int connectionIndex, char* reply){
 	else{
 		sprintf(reply, "User or password incorrect\n");
 	}
+}
+
+int checkOnlyLowerCaseLetters(char* username){
+	for(int i = 0; username[i]; i++){
+		if(username[i] < 'a' || username[i] > 'z')
+			return 0;
+	}
+	return 1;
+}
+
+void executeRegisterCommand(char* command, int connectionIndex, char* reply){
+	if(isAuthenticated[connectionIndex] == 1){
+		sprintf(reply, "Already authenticated\n");
+		return;
+	}
+	char username[105], password[105];
+	if(!extractUsernameAndPasswordFromCommand(command, username, password)){
+		sprintf(reply, "Invalid syntax. The correct usage is /register username password\n");
+		return;
+	}
+	if(!checkOnlyLowerCaseLetters(username)){
+		sprintf(reply, "Username should contain only lowercase letters\n");
+		return;	
+	}
+	if(!insertNewUser(Root, username, password)){
+		sprintf(reply, "Username already exists\n");
+		return;	
+	}
+	sprintf(reply, "User registered.\n");
 }
 
 int createSocket(){
@@ -144,7 +170,7 @@ void stream_write_to_fd(int fd, char* message, int len){
 }
 
 void sendWelcome(int fd, char* message){
-	sprintf(message, "Welcome to the chat\nUse /auth username password to authenticate yourself\nUse /quit to exit\n");
+	sprintf(message, "Welcome to the chat\nUse /register username password to register a new account.\nUse /auth username password to authenticate yourself\nUse /quit to exit\n");
 	stream_write_to_fd(fd, message, strlen(message));
 }
 
@@ -196,6 +222,11 @@ enum check_result checkForCommand(char* message, int conn, int* connfd, char* re
 		}
 		return REGULAR_COMMAND;
 	}
+	if(strncmp("/register ", message, 10) == 0){
+		executeRegisterCommand(message, conn, reply);
+		stream_write_to_fd(*connfd, reply, strlen(reply));
+		return REGULAR_COMMAND;
+	}
 	if(strncmp("/quit\n", message, 6) == 0){
 
 		return QUIT_COMMAND;
@@ -224,7 +255,7 @@ int addConnection(int* connfd){
 }
 
 void fillReplyWithUserMessage(int conn, char* reply, char* message){
-	sprintf(reply, "%s says:%s", users[conn], message);
+	sprintf(reply, "%s says: %s", users[conn], message);
 }
 
 
@@ -292,6 +323,18 @@ void runServer(int sockfd){
 	}
 }
 
+void insertDefaultUsers(){
+	Root = malloc(sizeof(struct Trie));
+	if(Root == NULL){
+		printf("Error at malloc\n");
+		exit(-1);
+	}
+	insertNewUser(Root, "alex", "alex");
+	insertNewUser(Root, "daria", "daria");
+	insertNewUser(Root, "miriam", "miriam");
+	insertNewUser(Root, "david", "david");
+}
+
 int main(){
 
 	int sockfd = createSocket();
@@ -301,6 +344,8 @@ int main(){
 	bindSocket(sockfd);
 
 	listenToClients(sockfd);
+
+	insertDefaultUsers();
 
 	runServer(sockfd);
 
